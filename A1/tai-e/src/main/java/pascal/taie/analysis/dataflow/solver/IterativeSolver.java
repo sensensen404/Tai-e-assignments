@@ -46,37 +46,32 @@ class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         Node exit = cfg.getExit();
         Queue<Node> queue = new LinkedList<>();
-        queue.offer(exit);
-
         Set<Node> visited = new HashSet<>();
+
         boolean isEnd = false;
         while (!isEnd) {
-            if (queue.isEmpty()) {
-                queue.offer(exit);
-                visited.clear();
-            }
+            queue.offer(exit);
+            visited.clear();
             isEnd = true;
+
             while (!queue.isEmpty()) {
                 Node cur = queue.poll();
-                Set<Node> preds = cfg.getPredsOf(cur);
-                for (Node node : preds) {
-                    if (!visited.contains(node)) {
+
+                for (Node node : cfg.getPredsOf(cur)) {
+                    if (visited.add(node)) {
                         queue.offer(node);
-                        visited.add(node);
                     }
                 }
+
                 Fact outFact = result.getOutFact(cur);
+
                 for (Node succ : cfg.getSuccsOf(cur)) {
-                    Fact inFactOfSucc = result.getInFact(succ);
-                    if (outFact == null) {
-                        outFact = analysis.newInitialFact();
-                    }
-                    analysis.meetInto(inFactOfSucc, outFact);
+                    Fact infactSucc = result.getInFact(succ);
+                    analysis.meetInto(infactSucc, outFact);
                     result.setOutFact(cur, outFact);
                 }
-                Fact inFact = result.getInFact(cur);
-                boolean changed = analysis.transferNode(cur, inFact, outFact);
-                if (changed) {
+
+                if (analysis.transferNode(cur, result.getInFact(cur), outFact)) {
                     isEnd = false;
                 }
             }
