@@ -44,38 +44,24 @@ class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        Node exit = cfg.getExit();
-        Queue<Node> queue = new LinkedList<>();
-        Set<Node> visited = new HashSet<>();
-
-        while (true) {
-            queue.offer(exit);
-            visited.clear();
-            boolean changed = false;
-
-            while (!queue.isEmpty()) {
-                Node cur = queue.poll();
-
-                for (Node node : cfg.getPredsOf(cur)) {
-                    if (visited.add(node)) {
-                        queue.offer(node);
-                    }
+        boolean changed = true;
+        while(changed) {
+            changed = false;
+            for (Node node: cfg) {
+                if (cfg.isExit(node)) {
+                    continue;
                 }
 
-                Fact outFact = result.getOutFact(cur);
-
-                for (Node succ : cfg.getSuccsOf(cur)) {
-                    Fact infactSucc = result.getInFact(succ);
-                    analysis.meetInto(infactSucc, outFact);
-                    result.setOutFact(cur, outFact);
+                Fact outfact = result.getOutFact(node);
+                for (Node succ: cfg.getSuccsOf(node)) {
+                    Fact inFactOfSucc = result.getInFact(succ);
+                    analysis.meetInto(inFactOfSucc, outfact);
                 }
 
-                if (analysis.transferNode(cur, result.getInFact(cur), outFact)) {
+                Fact inFact = result.getInFact(node);
+                if (analysis.transferNode(node, inFact, outfact)) {
                     changed = true;
                 }
-            }
-            if (!changed) {
-                break;
             }
         }
     }
