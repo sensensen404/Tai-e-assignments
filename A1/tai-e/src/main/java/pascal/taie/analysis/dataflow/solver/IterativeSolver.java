@@ -48,11 +48,10 @@ class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
         Queue<Node> queue = new LinkedList<>();
         Set<Node> visited = new HashSet<>();
 
-        boolean isEnd = false;
-        while (!isEnd) {
+        while (true) {
             queue.offer(exit);
             visited.clear();
-            isEnd = true;
+            boolean changed = false;
 
             while (!queue.isEmpty()) {
                 Node cur = queue.poll();
@@ -72,8 +71,11 @@ class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
                 }
 
                 if (analysis.transferNode(cur, result.getInFact(cur), outFact)) {
-                    isEnd = false;
+                    changed = true;
                 }
+            }
+            if (!changed) {
+                break;
             }
         }
     }
