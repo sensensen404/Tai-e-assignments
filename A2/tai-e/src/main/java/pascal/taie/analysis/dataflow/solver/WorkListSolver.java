@@ -26,6 +26,9 @@ import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
+import java.util.*;
+import java.util.function.Consumer;
+
 class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     WorkListSolver(DataflowAnalysis<Node, Fact> analysis) {
@@ -35,10 +38,44 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
+        Queue<Node> queue = new LinkedList<>(cfg.getNodes());
+        while (!queue.isEmpty()) {
+            Node node = queue.poll();
+            Set<Node> preds = cfg.getPredsOf(node);
+
+            Fact infact = result.getInFact(node);
+            for (Node pred : preds) {
+                Fact outfactOfPred = result.getOutFact(pred);
+                analysis.meetInto(outfactOfPred, infact);
+            }
+
+            Fact outfact = result.getOutFact(node);
+            if (analysis.transferNode(node, infact, outfact)) {
+                List<Node> succs = getAllSuccNode(cfg, node);
+                succs.forEach(queue::offer);
+            }
+        }
+
     }
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         throw new UnsupportedOperationException();
+    }
+
+    private List<Node> getAllSuccNode(CFG<Node> cfg, Node node) {
+        List<Node> res = new ArrayList<>();
+        Queue<Node> queue = new LinkedList<>();
+        queue.offer(node);
+        while (!queue.isEmpty()) {
+            Node cur = queue.poll();
+            res.add(cur);
+
+            Set<Node> succs = cfg.getSuccsOf(node);
+            for (Node succNode : succs) {
+                queue.offer(succNode);
+            }
+        }
+        return res;
     }
 }
