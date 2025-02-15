@@ -51,7 +51,7 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
             Fact outfact = result.getOutFact(node);
             if (analysis.transferNode(node, infact, outfact)) {
-                List<Node> succs = getAllSuccNode(cfg, node);
+                Set<Node> succs = cfg.getSuccsOf(node);
                 succs.forEach(queue::offer);
             }
         }
@@ -61,21 +61,5 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         throw new UnsupportedOperationException();
-    }
-
-    private List<Node> getAllSuccNode(CFG<Node> cfg, Node node) {
-        List<Node> res = new ArrayList<>();
-        Queue<Node> queue = new LinkedList<>();
-        queue.offer(node);
-        while (!queue.isEmpty()) {
-            Node cur = queue.poll();
-            res.add(cur);
-
-            Set<Node> succs = cfg.getSuccsOf(node);
-            for (Node succNode : succs) {
-                queue.offer(succNode);
-            }
-        }
-        return res;
     }
 }
