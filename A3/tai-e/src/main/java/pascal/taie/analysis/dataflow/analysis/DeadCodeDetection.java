@@ -33,21 +33,14 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
+import java.util.function.Consumer;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -70,8 +63,176 @@ public class DeadCodeDetection extends MethodAnalysis {
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
+
+        Stmt entry = cfg.getEntry();
+        Set<Stmt> reachableSet = new HashSet<>();
+
+        Set<Stmt> visitedSet = new HashSet<>();
+        Queue<Stmt> queue = new LinkedList<>();
+        queue.offer(entry);
+        while (!queue.isEmpty()) {
+            Stmt current = queue.poll();
+            reachableSet.add(current);
+            visitedSet.add(current);
+            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
+
+            if (current instanceof If) {
+                CPFact cpFact = constants.getResult(current);
+                ConditionExp exp = ((If) current).getCondition();
+                Value value = ConstantPropagation.evaluate(exp, cpFact);
+
+                boolean isTrueCondition = value.isConstant() && value.getConstant() > 0;
+                for (Edge<Stmt> edge : outEdges) {
+                    if (edge.getKind() == Edge.Kind.IF_TRUE && isTrueCondition && !visitedSet.contains(edge.getTarget())) {
+                        queue.offer(edge.getTarget());
+                    }
+                    if (edge.getKind() == Edge.Kind.IF_FALSE && !isTrueCondition && !visitedSet.contains(edge.getTarget())) {
+                        queue.offer(edge.getTarget());
+                    }
+                }
+
+            } else if (current instanceof SwitchStmt) {
+                Var var = ((SwitchStmt) current).getVar();
+                CPFact cpFact = constants.getResult(current);
+                Value value = cpFact.get(var);
+                if (value != null && value.isConstant()) {
+                    int constant = value.getConstant();
+                    boolean isMatched = false;
+                    boolean isFallThrough = false;
+                    Edge<Stmt> switchDefaultEdge = null;
+                    for (Edge<Stmt> edge : outEdges) {
+                        if (edge.getKind() == Edge.Kind.SWITCH_CASE) {
+                            int caseValue = edge.getCaseValue();
+                            if (constant == caseValue) {
+                                isMatched = true;
+                                if (!visitedSet.contains(edge.getTarget())) {
+                                    queue.offer(edge.getTarget());
+                                }
+                                Stmt target = edge.getTarget();
+                                isFallThrough = target.canFallThrough();
+                            } else {
+                                if (isFallThrough) {
+                                    if (!visitedSet.contains(edge.getTarget())) {
+                                        queue.offer(edge.getTarget());
+                                    }
+                                    Stmt target = edge.getTarget();
+                                    isFallThrough = target.canFallThrough();
+                                }
+                            }
+                        } else if (edge.getKind() == Edge.Kind.SWITCH_DEFAULT) {
+                            switchDefaultEdge = edge;
+                        }
+                    }
+                    if (!isMatched && switchDefaultEdge != null && !visitedSet.contains(switchDefaultEdge.getTarget())) {
+                        queue.offer(switchDefaultEdge.getTarget());
+                    }
+                } else {
+                    for (Edge<Stmt> edge : outEdges) {
+                        if (!visitedSet.contains(edge.getTarget())) {
+                            queue.offer(edge.getTarget());
+                        }
+                    }
+                }
+            } else if (current instanceof AssignStmt) {
+                SetFact<Var> result = liveVars.getResult(current);
+                Var var = ((AssignStmt<Var, RValue>) current).getLValue();
+                RValue rValue = ((AssignStmt<Var, RValue>) current).getRValue();
+                if (!result.contains(var) && hasNoSideEffect(rValue)) {
+                    deadCode.add(current);
+                }
+                for (Edge<Stmt> edge : outEdges) {
+                    if (!visitedSet.contains(edge.getTarget())) {
+                        queue.offer(edge.getTarget());
+                    }
+                }
+            } else {
+                for (Edge<Stmt> edge : outEdges) {
+                    if (!visitedSet.contains(edge.getTarget())) {
+                        queue.offer(edge.getTarget());
+                    }
+                }
+            }
+        }
+
+        for (Stmt stmt : cfg) {
+            if (!reachableSet.contains(stmt) && !cfg.isExit(stmt)) {
+                deadCode.add(stmt);
+            }
+        }
+
         // Your task is to recognize dead code in ir and add it to deadCode
         return deadCode;
+    }
+
+    private static Set<Stmt> findDeadAssignment(CFG<Stmt> cfg, DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        Set<Stmt> deadAssignmentSet = new HashSet<>();
+        Stmt entry = cfg.getEntry();
+        Queue<Stmt> queue = new LinkedList<>();
+        queue.offer(entry);
+        cfg.forEach(queue::offer);
+        while (!queue.isEmpty()) {
+            Stmt current = queue.poll();
+            System.out.println("current:" + current.toString());
+            if (current instanceof AssignStmt) {
+                SetFact<Var> result = liveVars.getResult(current);
+                Var var = ((AssignStmt<Var, RValue>) current).getLValue();
+                RValue rValue = ((AssignStmt<Var, RValue>) current).getRValue();
+                if (!result.contains(var) && hasNoSideEffect(rValue)) {
+                    deadAssignmentSet.add(current);
+                }
+            }
+            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
+            for (Edge<Stmt> edge : outEdges) {
+                queue.offer(edge.getTarget());
+            }
+        }
+        return deadAssignmentSet;
+    }
+
+    private static Set<Stmt> findUnreachableBranch(CFG<Stmt> cfg, DataflowResult<Stmt, CPFact> constants) {
+        Set<Stmt> reachableSet = new HashSet<>();
+
+        Stmt entry = cfg.getEntry();
+        Queue<Stmt> queue = new LinkedList<>();
+        queue.offer(entry);
+        while (!queue.isEmpty()) {
+            Stmt current = queue.poll();
+            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
+            reachableSet.add(current);
+
+        }
+
+        Set<Stmt> unreachableSet = new HashSet<>();
+        for (Stmt stmt : cfg) {
+            if (!reachableSet.contains(stmt)) {
+                unreachableSet.add(stmt);
+            }
+        }
+        return unreachableSet;
+    }
+
+    private static Set<Stmt> findControlFlowUnreachable(CFG<Stmt> cfg) {
+        Stmt entry = cfg.getEntry();
+        Set<Stmt> reachableSet = new HashSet<>();
+
+        Queue<Stmt> queue = new LinkedList<>();
+        queue.offer(entry);
+        while (!queue.isEmpty()) {
+            Stmt current = queue.poll();
+            reachableSet.add(current);
+            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
+            for (Edge<Stmt> edge : outEdges) {
+                queue.offer(edge.getTarget());
+            }
+        }
+
+        Set<Stmt> unreachableSet = new HashSet<>();
+        for (Stmt stmt : cfg) {
+            if (!reachableSet.contains(stmt)) {
+                unreachableSet.add(stmt);
+            }
+        }
+        return unreachableSet;
     }
 
     /**
