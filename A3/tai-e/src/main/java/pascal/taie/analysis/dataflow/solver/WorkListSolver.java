@@ -61,42 +61,21 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
-//        Queue<Node> queue = new LinkedList<>(cfg.getNodes());
-//        while (!queue.isEmpty()) {
-//            Node node = queue.poll();
-//            Set<Node> succs = cfg.getSuccsOf(node);
-//
-//            Fact outfact = result.getOutFact(node);
-//            for (Node succ : succs) {
-//                Fact infactOfSucc = result.getInFact(succ);
-//                analysis.meetInto(infactOfSucc, outfact);
-//            }
-//
-//            Fact infact = result.getInFact(node);
-//            if (analysis.transferNode(node, infact, outfact)) {
-//                Set<Node> preds = cfg.getPredsOf(node);
-//                preds.forEach(queue::offer);
-//            }
-//        }
+        Queue<Node> queue = new LinkedList<>(cfg.getNodes());
+        while (!queue.isEmpty()) {
+            Node node = queue.poll();
+            Set<Node> succs = cfg.getSuccsOf(node);
 
-        boolean changed = true;
-        while(changed) {
-            changed = false;
-            for (Node node: cfg) {
-                if (cfg.isExit(node)) {
-                    continue;
-                }
+            Fact outfact = result.getOutFact(node);
+            for (Node succ : succs) {
+                Fact infactOfSucc = result.getInFact(succ);
+                analysis.meetInto(infactOfSucc, outfact);
+            }
 
-                Fact outfact = result.getOutFact(node);
-                for (Node succ: cfg.getSuccsOf(node)) {
-                    Fact inFactOfSucc = result.getInFact(succ);
-                    analysis.meetInto(inFactOfSucc, outfact);
-                }
-
-                Fact inFact = result.getInFact(node);
-                if (analysis.transferNode(node, inFact, outfact)) {
-                    changed = true;
-                }
+            Fact infact = result.getInFact(node);
+            if (analysis.transferNode(node, infact, outfact)) {
+                Set<Node> preds = cfg.getPredsOf(node);
+                preds.forEach(queue::offer);
             }
         }
     }

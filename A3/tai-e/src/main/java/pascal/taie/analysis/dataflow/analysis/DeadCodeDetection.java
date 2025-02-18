@@ -38,9 +38,12 @@ import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.util.collection.Pair;
 
 import java.util.*;
-import java.util.function.Consumer;
+
+import static pascal.taie.analysis.graph.cfg.Edge.Kind.IF_FALSE;
+import static pascal.taie.analysis.graph.cfg.Edge.Kind.IF_TRUE;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -66,94 +69,33 @@ public class DeadCodeDetection extends MethodAnalysis {
 
         Stmt entry = cfg.getEntry();
         Set<Stmt> reachableSet = new HashSet<>();
-
         Set<Stmt> visitedSet = new HashSet<>();
         Queue<Stmt> queue = new LinkedList<>();
+
         queue.offer(entry);
+
         while (!queue.isEmpty()) {
-            Stmt current = queue.poll();
-            reachableSet.add(current);
-            visitedSet.add(current);
-            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
+            Stmt stmt = queue.poll();
+            if (!visitedSet.add(stmt)) {
+                continue;
+            }
 
-            if (current instanceof If) {
-                CPFact cpFact = constants.getResult(current);
-                ConditionExp exp = ((If) current).getCondition();
-                Value value = ConstantPropagation.evaluate(exp, cpFact);
+            reachableSet.add(stmt);
+            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(stmt);
 
-                boolean isTrueCondition = value.isConstant() && value.getConstant() > 0;
-                for (Edge<Stmt> edge : outEdges) {
-                    if (edge.getKind() == Edge.Kind.IF_TRUE && isTrueCondition && !visitedSet.contains(edge.getTarget())) {
-                        queue.offer(edge.getTarget());
-                    }
-                    if (edge.getKind() == Edge.Kind.IF_FALSE && !isTrueCondition && !visitedSet.contains(edge.getTarget())) {
-                        queue.offer(edge.getTarget());
-                    }
-                }
+            // 处理无用赋值
+            if (stmt instanceof AssignStmt && isDeadAssignment(stmt, liveVars)) {
+                deadCode.add(stmt);
+            }
 
-            } else if (current instanceof SwitchStmt) {
-                Var var = ((SwitchStmt) current).getVar();
-                CPFact cpFact = constants.getResult(current);
-                Value value = cpFact.get(var);
-                if (value != null && value.isConstant()) {
-                    int constant = value.getConstant();
-                    boolean isMatched = false;
-                    boolean isFallThrough = false;
-                    Edge<Stmt> switchDefaultEdge = null;
-                    for (Edge<Stmt> edge : outEdges) {
-                        if (edge.getKind() == Edge.Kind.SWITCH_CASE) {
-                            int caseValue = edge.getCaseValue();
-                            if (constant == caseValue) {
-                                isMatched = true;
-                                if (!visitedSet.contains(edge.getTarget())) {
-                                    queue.offer(edge.getTarget());
-                                }
-                                Stmt target = edge.getTarget();
-                                isFallThrough = target.canFallThrough();
-                            } else {
-                                if (isFallThrough) {
-                                    if (!visitedSet.contains(edge.getTarget())) {
-                                        queue.offer(edge.getTarget());
-                                    }
-                                    Stmt target = edge.getTarget();
-                                    isFallThrough = target.canFallThrough();
-                                }
-                            }
-                        } else if (edge.getKind() == Edge.Kind.SWITCH_DEFAULT) {
-                            switchDefaultEdge = edge;
-                        }
-                    }
-                    if (!isMatched && switchDefaultEdge != null && !visitedSet.contains(switchDefaultEdge.getTarget())) {
-                        queue.offer(switchDefaultEdge.getTarget());
-                    }
-                } else {
-                    for (Edge<Stmt> edge : outEdges) {
-                        if (!visitedSet.contains(edge.getTarget())) {
-                            queue.offer(edge.getTarget());
-                        }
-                    }
-                }
-            } else if (current instanceof AssignStmt) {
-                SetFact<Var> result = liveVars.getResult(current);
-                Var var = ((AssignStmt<Var, RValue>) current).getLValue();
-                RValue rValue = ((AssignStmt<Var, RValue>) current).getRValue();
-                if (!result.contains(var) && hasNoSideEffect(rValue)) {
-                    deadCode.add(current);
-                }
-                for (Edge<Stmt> edge : outEdges) {
-                    if (!visitedSet.contains(edge.getTarget())) {
-                        queue.offer(edge.getTarget());
-                    }
-                }
+            // 找到控制流的下一条语句
+            Stmt followingStmt = getFollowingControlStmt(stmt, constants, outEdges);
+            if (followingStmt == null) {
+                outEdges.forEach(edge -> queue.offer(edge.getTarget()));
             } else {
-                for (Edge<Stmt> edge : outEdges) {
-                    if (!visitedSet.contains(edge.getTarget())) {
-                        queue.offer(edge.getTarget());
-                    }
-                }
+                queue.offer(followingStmt);
             }
         }
-
         for (Stmt stmt : cfg) {
             if (!reachableSet.contains(stmt) && !cfg.isExit(stmt)) {
                 deadCode.add(stmt);
@@ -164,75 +106,24 @@ public class DeadCodeDetection extends MethodAnalysis {
         return deadCode;
     }
 
-    private static Set<Stmt> findDeadAssignment(CFG<Stmt> cfg, DataflowResult<Stmt, SetFact<Var>> liveVars) {
-        Set<Stmt> deadAssignmentSet = new HashSet<>();
-        Stmt entry = cfg.getEntry();
-        Queue<Stmt> queue = new LinkedList<>();
-        queue.offer(entry);
-        cfg.forEach(queue::offer);
-        while (!queue.isEmpty()) {
-            Stmt current = queue.poll();
-            System.out.println("current:" + current.toString());
-            if (current instanceof AssignStmt) {
-                SetFact<Var> result = liveVars.getResult(current);
-                Var var = ((AssignStmt<Var, RValue>) current).getLValue();
-                RValue rValue = ((AssignStmt<Var, RValue>) current).getRValue();
-                if (!result.contains(var) && hasNoSideEffect(rValue)) {
-                    deadAssignmentSet.add(current);
-                }
-            }
-            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
-            for (Edge<Stmt> edge : outEdges) {
-                queue.offer(edge.getTarget());
-            }
+    private static Stmt getFollowingControlStmt(Stmt stmt, DataflowResult<Stmt, CPFact> constants, Set<Edge<Stmt>> outEdges) {
+        Stmt followingStmt = null;
+        if (stmt instanceof If) {
+            followingStmt = getFollowingIfStmt((If) stmt, constants, outEdges);
         }
-        return deadAssignmentSet;
+        if (stmt instanceof SwitchStmt) {
+            followingStmt = getFollowingSwitchStmt((SwitchStmt) stmt, constants);
+        }
+        return followingStmt;
     }
 
-    private static Set<Stmt> findUnreachableBranch(CFG<Stmt> cfg, DataflowResult<Stmt, CPFact> constants) {
-        Set<Stmt> reachableSet = new HashSet<>();
 
-        Stmt entry = cfg.getEntry();
-        Queue<Stmt> queue = new LinkedList<>();
-        queue.offer(entry);
-        while (!queue.isEmpty()) {
-            Stmt current = queue.poll();
-            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
-            reachableSet.add(current);
-
-        }
-
-        Set<Stmt> unreachableSet = new HashSet<>();
-        for (Stmt stmt : cfg) {
-            if (!reachableSet.contains(stmt)) {
-                unreachableSet.add(stmt);
-            }
-        }
-        return unreachableSet;
-    }
-
-    private static Set<Stmt> findControlFlowUnreachable(CFG<Stmt> cfg) {
-        Stmt entry = cfg.getEntry();
-        Set<Stmt> reachableSet = new HashSet<>();
-
-        Queue<Stmt> queue = new LinkedList<>();
-        queue.offer(entry);
-        while (!queue.isEmpty()) {
-            Stmt current = queue.poll();
-            reachableSet.add(current);
-            Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(current);
-            for (Edge<Stmt> edge : outEdges) {
-                queue.offer(edge.getTarget());
-            }
-        }
-
-        Set<Stmt> unreachableSet = new HashSet<>();
-        for (Stmt stmt : cfg) {
-            if (!reachableSet.contains(stmt)) {
-                unreachableSet.add(stmt);
-            }
-        }
-        return unreachableSet;
+    private static boolean isDeadAssignment(Stmt stmt, DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        AssignStmt<Var, RValue> assignStmt = ((AssignStmt<Var, RValue>) stmt);
+        SetFact<Var> result = liveVars.getResult(stmt);
+        Var var = assignStmt.getLValue();
+        RValue rValue = assignStmt.getRValue();
+        return !result.contains(var) && hasNoSideEffect(rValue);
     }
 
     /**
@@ -256,5 +147,39 @@ public class DeadCodeDetection extends MethodAnalysis {
             return op != ArithmeticExp.Op.DIV && op != ArithmeticExp.Op.REM;
         }
         return true;
+    }
+
+    private static Stmt getFollowingIfStmt(If ifStmt, DataflowResult<Stmt, CPFact> constants, Set<Edge<Stmt>> outEdges) {
+        CPFact cpFact = constants.getResult(ifStmt);
+        ConditionExp exp = ifStmt.getCondition();
+        Value value = ConstantPropagation.evaluate(exp, cpFact);
+        if (!value.isConstant()) {
+            return null;
+        }
+
+        int constant = value.getConstant();
+        Edge.Kind kind = constant == 1 ? IF_TRUE : IF_FALSE;
+        return outEdges.stream()
+                .filter(edge -> edge.getKind() == kind)
+                .map(Edge::getTarget)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static Stmt getFollowingSwitchStmt(SwitchStmt switchStmt, DataflowResult<Stmt, CPFact> constants) {
+        Var var = switchStmt.getVar();
+        CPFact cpFact = constants.getResult(switchStmt);
+        Value value = ConstantPropagation.evaluate(var, cpFact);
+        if (!value.isConstant()) {
+            return null;
+        }
+
+        int constant = value.getConstant();
+        Stmt defaultTarget = switchStmt.getDefaultTarget();
+        return switchStmt.getCaseTargets().stream()
+                .filter(pair -> constant == pair.first())
+                .map(Pair::second)
+                .findFirst()
+                .orElse(defaultTarget);
     }
 }
