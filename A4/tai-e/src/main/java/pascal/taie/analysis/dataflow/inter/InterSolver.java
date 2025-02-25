@@ -23,11 +23,16 @@
 package pascal.taie.analysis.dataflow.inter;
 
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
+import pascal.taie.analysis.graph.icfg.CallEdge;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.analysis.graph.icfg.ICFGEdge;
+import pascal.taie.ir.IR;
 import pascal.taie.util.collection.SetQueue;
 
+import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -60,9 +65,44 @@ class InterSolver<Method, Node, Fact> {
 
     private void initialize() {
         // TODO - finish me
+        for (Node node : icfg) {
+            boolean isEntry = icfg.entryMethods().anyMatch(m -> {
+                Node entryNode = icfg.getEntryOf(m);
+                return entryNode == node;
+            });
+            if (isEntry) {
+                result.setInFact(node, analysis.newBoundaryFact(node));
+                result.setOutFact(node, analysis.newInitialFact());
+            } else {
+                result.setInFact(node, analysis.newInitialFact());
+                result.setOutFact(node, analysis.newInitialFact());
+            }
+        }
     }
 
     private void doSolve() {
         // TODO - finish me
+        workList = new LinkedList<>(icfg.getNodes());
+        while (!workList.isEmpty()) {
+            Node node = workList.poll();
+
+            Fact infact = analysis.newInitialFact();
+//            Fact infact = result.getInFact(node);
+            Set<ICFGEdge<Node>> inEdges = icfg.getInEdgesOf(node);
+
+            for (ICFGEdge<Node> edge : inEdges) {
+                Node source = edge.getSource();
+                Fact sourceOutFact = result.getOutFact(source);
+                Fact transferredOutfact = analysis.transferEdge(edge, sourceOutFact);
+                analysis.meetInto(transferredOutfact, infact);
+            }
+
+            Fact outfact = result.getOutFact(node);
+            if (analysis.transferNode(node, infact, outfact)) {
+                Set<Node> succs = icfg.getSuccsOf(node);
+                succs.forEach(workList::offer);
+            }
+
+        }
     }
 }

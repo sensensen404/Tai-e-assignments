@@ -23,6 +23,8 @@
 package pascal.taie.analysis.graph.callgraph;
 
 import pascal.taie.World;
+import pascal.taie.ir.exp.InvokeExp;
+import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.proginfo.MethodRef;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.ClassHierarchy;
@@ -30,9 +32,7 @@ import pascal.taie.language.classes.JClass;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.classes.Subsignature;
 
-import java.util.ArrayDeque;
-import java.util.Queue;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Implementation of the CHA algorithm.
@@ -51,6 +51,23 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
         DefaultCallGraph callGraph = new DefaultCallGraph();
         callGraph.addEntryMethod(entry);
         // TODO - finish me
+        Queue<JMethod> queue = new LinkedList<>();
+        queue.offer(entry);
+        while (!queue.isEmpty()) {
+            JMethod method = queue.poll();
+            if (callGraph.contains(method)) {
+                continue;
+            }
+            callGraph.addReachableMethod(method);
+            Set<Invoke> callsites = callGraph.getCallSitesIn(method);
+            for (Invoke invoke : callsites) {
+                Set<JMethod> calltargets = resolve(invoke);
+                for (JMethod target : calltargets) {
+                    callGraph.addEdge(new Edge<>(CallKind.VIRTUAL, invoke, target));
+                    queue.offer(target);
+                }
+            }
+        }
         return callGraph;
     }
 
@@ -59,7 +76,32 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
      */
     private Set<JMethod> resolve(Invoke callSite) {
         // TODO - finish me
-        return null;
+        Set<JMethod> targets = new HashSet<>();
+        MethodRef methodRef = callSite.getMethodRef();
+        Subsignature subsignature = methodRef.getSubsignature();
+        JClass jclass = methodRef.getDeclaringClass();
+
+        if (callSite.isStatic()) {
+            JMethod jmethod = jclass.getDeclaredMethod(subsignature);
+            targets.add(jmethod);
+        }
+
+        if (callSite.isSpecial()) {
+            JMethod jmethod = dispatch(jclass, subsignature);
+            targets.add(jmethod);
+        }
+        if (callSite.isVirtual() || callSite.isInterface()) {
+
+            List<JClass> jclassList = getAllSubclassesOf(jclass);
+            jclassList.add(jclass);
+            for (JClass subclass : jclassList) {
+                JMethod jmethodSubclass = dispatch(subclass, subsignature);
+                if (jmethodSubclass != null) {
+                    targets.add(jmethodSubclass);
+                }
+            }
+        }
+        return targets;
     }
 
     /**
@@ -70,6 +112,35 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
      */
     private JMethod dispatch(JClass jclass, Subsignature subsignature) {
         // TODO - finish me
-        return null;
+        JMethod jMethod = jclass.getDeclaredMethod(subsignature);
+        if (jMethod != null && !jMethod.isAbstract()) {
+            return jMethod;
+        }
+        JClass superClass = jclass.getSuperClass();
+        if (superClass == null) {
+            return null;
+        }
+        return dispatch(superClass, subsignature);
+    }
+
+    private List<JClass> getAllSubclassesOf(JClass jclass) {
+        List<JClass> result = new ArrayList<>();
+        Collection<JClass> directSubclasses = hierarchy.getDirectSubclassesOf(jclass);
+        for (JClass item : directSubclasses) {
+            result.add(item);
+            result.addAll(getAllSubclassesOf(item));
+        }
+        Collection<JClass> directImplementors = hierarchy.getDirectImplementorsOf(jclass);
+        for (JClass item : directImplementors) {
+            result.add(item);
+            result.addAll(getAllSubclassesOf(item));
+        }
+        Collection<JClass> directSubinterfaces = hierarchy.getDirectSubinterfacesOf(jclass);
+        for (JClass item : directSubinterfaces) {
+            result.add(item);
+            result.addAll(getAllSubclassesOf(item));
+        }
+
+        return result;
     }
 }
